@@ -2,8 +2,6 @@ language: clojure
 script:
   - lein test
   - lein uberjar
-  - lein run
-  - lein repl
 jdk:
   - openjdk6
   - openjdk7
