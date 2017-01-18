@@ -1,123 +1,94 @@
 (ns restaurant-inspections-api.services
-  (:require [restaurant-inspections-api.responses :as res]
-            [clj-time.format :as f]
-            [clj-time.coerce :as c]
-            [yesql.core :refer [defqueries]]
-            [restaurant-inspections-api.environment :as env]
-            [clojure.java.jdbc :as db]
+  (:require [yesql.core :refer [defqueries]]
+            [restaurant-inspections-api.db :as db]
+            [restaurant-inspections-api.util :as util]
+            [taoensso.timbre :refer [debug]]
             [clojure.string :as str]))
 
-(def db-url (env/get-env-db-url))
-
-(defqueries "sql/inspections.sql" {:connection db-url})
-
-(defn query-inspection-details
-  [query]
-  (inspection-details query))
-
-(defn home
-  "go to project wiki"
-  []
-  (res/redirect "https://github.com/Code-for-Miami/restaurant-inspections-api/wiki"))
-
-(defn get-violation-count
-  "dynamically get violation in an inspection row using the violation #"
-  [data id]
-  ((keyword (format "violation_%1$02d" id))                 ;; violation_01 .. violation_58
-    data))
-
-(defn parse-violations
-  "get an inspection row and generates a list of not empty violations"
-  [data]
-  (keep #(let [count (get-violation-count data %)]
-           (when (and (not (nil? count)) (pos? count))
-             {:id % :count count}))
-       (range 1 59)))
 
 (defn format-data
-  "formats db raw data to json pattern"
+  "Format db raw data to json."
   ([data]
    (format-data data false))
   ([data is-full]
-    (let [basic-data {:id                              (:inspection_visit_id data)
-                      :district                        (:district data)
-                      :countyNumber                    (:county_number data)
-                      :countyName                      (:county_name data)
-                      :licenseTypeCode                 (:license_type_code data)
-                      :licenseNumber                   (:license_number data)
-                      :businessName                    (:business_name data)
-                      :inspectionDate                  (f/unparse (f/formatter "YYYY-MM-dd")
-                                                                  (c/from-date (:inspection_date data)))
-                      :locationAddress                 (:location_address data)
-                      :locationCity                    (:location_city data)
-                      :locationZipcode                 (:location_zipcode data)
-                      :inspectionNumber                (:inspection_number data)
-                      :visitNumber                     (:visit_number data)
-                      :inspectionType                  (:inspection_type data)
-                      :inspectionDisposition           (:inspection_disposition data)
-                      :totalViolations                 (:total_violations data)
-                      :highPriorityViolations          (:high_priority_violations data)
-                      :intermediateViolations          (:intermediate_violations data)
-                      :basicViolations                 (:basic_violations data)}]
-      (if is-full
-        (assoc basic-data
-               :criticalViolationsBefore2013      (:critical_violations_before_2013 data)
-               :nonCriticalViolationsBefore2013   (:noncritical_violations_before_2013 data)
-               :pdaStatus                         (:pda_status data)
-               :licenseId                         (:license_id data)
-               :violations (parse-violations data))
-        basic-data))))
+   (let [basic-data {:type                   "inspections"
+                     :id                     (:inspection_visit_id data)
+                     :district               (:district data)
+                     :countyNumber           (:county_number data)
+                     :countyName             (:county_name data)
+                     :licenseTypeCode        (:license_type_code data)
+                     :licenseNumber          (:license_number data)
+                     :businessName           (:business_name data)
+                     :inspectionDate         (util/parse-date-or-nil (:inspection_date data))
+                     :locationAddress        (:location_address data)
+                     :locationCity           (:location_city data)
+                     :locationZipcode        (:location_zipcode data)
+                     :inspectionNumber       (:inspection_number data)
+                     :visitNumber            (:visit_number data)
+                     :inspectionType         (:inspection_type data)
+                     :inspectionDisposition  (:inspection_disposition data)
+                     :totalViolations        (:total_violations data)
+                     :highPriorityViolations (:high_priority_violations data)
+                     :intermediateViolations (:intermediate_violations data)
+                     :basicViolations        (:basic_violations data)}]
+     (if is-full
+       (assoc basic-data
+              :criticalViolationsBefore2013      (:critical_violations_before_2013 data)
+              :nonCriticalViolationsBefore2013   (:noncritical_violations_before_2013 data)
+              :pdaStatus                         (:pda_status data)
+              :licenseId                         (:license_id data)
+              :violations                        (:violations data))
+       basic-data))))
 
-(defn location
-  "return inspections per given location and period"
-  [start-date end-date zips]
-  (let [zips (str/split zips #",")]
-    (res/ok (map format-data
-                 (inspections-by-zips
-                   {:startDate    start-date
-                    :endDate      end-date
-                    :zips         zips})))))
+(defn violations-for-inspection
+  "Select and parse violations for a given inspection id."
+  [inspection-id]
+  (map (fn [violation]
+         {:id               (:violation_id violation)
+          :count            (:violation_count violation)
+          :description      (:description violation)
+          :isRiskFactor     (:is_risk_factor violation)
+          :isPrimaryConcern (:is_primary_concern violation)})
+       (db/select-violations-by-inspection {:id inspection-id})))
 
-(defn get-name
-  "return inspections per given business name, location and period"
-  ([start-date end-date name]
-   (res/ok (map format-data
-                (inspections-by-business
-                  {:startDate    start-date
-                   :endDate      end-date
-                   :businessName (str/replace name #"\*" "%")}))))
-  ([start-date end-date name zips]
-   (let [zips (str/split zips #",")]
-     (res/ok (map format-data
-                  (inspections-by-business
-                    {:startDate    start-date
-                     :endDate      end-date
-                     :businessName (str/replace name #"\*" "%")
-                     :zips         zips}))))))
-
-(defn district
-  "return inspections per given district and period"
-  [district start-date end-date]
-  (res/ok (map format-data
-               (inspections-by-district
-                 {:startDate start-date
-                  :endDate   end-date
-                  :district  district}))))
-
-(defn county
-  "return inspections per given county and period"
-  [countyNumber start-date end-date]
-  (res/ok (map format-data
-               (inspections-by-county {:startDate    start-date
-                                       :endDate      end-date
-                                       :countyNumber countyNumber}))))
-
-(defn get-details
-  "return full info for the given Id"
+(defn full-inspection-details
+  "Return full inspection info for the given Id."
   [id]
-  (res/ok (format-data (first (query-inspection-details {:id id})) true)))
+  (if-let [inspection (first (db/select-inspection-details {:id id}))]
+    (format-data (assoc inspection :violations (violations-for-inspection (:inspection_visit_id inspection)))
+                 true)))
 
-(defn get-dist-counties
-  "return district and counties list"
+(defn format-params
+  "Format all the pre-params sent to this endpoint"
+  [params-map]
+  (assoc params-map
+    :businessName (when-let [businessName (:businessName params-map)]
+                    (clojure.string/replace businessName #"\*" "%"))
+    :zipCodes (when-let [zipCodes (:zipCodes params-map)]
+                (str/split zipCodes #","))
+    :page (* (:page params-map) (:perPage params-map))))
+
+(defn inspections-by-all
+  "Retrieves and formats inspections, filtered by all, any, or no criteria."
+  [params-map]
+  (map format-data (db/select-inspections-by-all (format-params params-map))))
+
+(defn get-counties
+  "Return counties list, with their district."
   []
-  (res/ok (district-counties-summary)))
+  (db/select-counties-summary))
+
+(defn- format-businesses-params
+  [params-map]
+  (assoc params-map
+         :page (* (:page params-map) (:perPage params-map))))
+
+(defn get-businesses
+  ""
+  [params-map]
+  (db/select-all-restaurants (format-businesses-params params-map)))
+
+(defn get-violations
+  ""
+  []
+  (db/select-all-violations))
